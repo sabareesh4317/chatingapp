@@ -1,0 +1,119 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isUserDoc(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isMemberOfRoom(roomData) {
+      return isAuthenticated() && (
+        roomData == null || // Allow for initial room creation
+        roomData.members == null || // Allow if members field doesn't exist yet
+        request.auth.uid in roomData.members // Simplified membership check
+      );
+    }
+
+    function isParticipantInChat(chatData) {
+      return isAuthenticated() && (
+        chatData == null || // Allow for initial chat creation
+        chatData.participants == null || // Allow if participants field doesn't exist yet
+        request.auth.uid in chatData.participants // Simplified participant check
+      );
+    }
+
+    function isFriendRequestParticipant(requestData) {
+      return isAuthenticated() && (
+        request.auth.uid == requestData.senderId ||
+        request.auth.uid == requestData.receiverId
+      );
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isUserDoc(userId);
+      allow update: if isUserDoc(userId);
+      allow delete: if isUserDoc(userId);
+    }
+
+    // Friend requests collection
+    match /friendRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource == null ||
+        isFriendRequestParticipant(resource.data)
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.senderId == request.auth.uid
+      );
+      allow update: if isAuthenticated() && (
+        isFriendRequestParticipant(resource.data)
+      );
+      allow delete: if isAuthenticated() && (
+        isFriendRequestParticipant(resource.data)
+      );
+    }
+
+    // Chat rooms collection
+    match /chatRooms/{roomId} {
+      allow read: if isAuthenticated() && (
+        !resource.data.isPrivate || 
+        request.auth.uid in resource.data.members ||
+        request.auth.uid in resource.data.invitedUsers
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource == null || // Allow initial creation
+        isMemberOfRoom(resource.data)
+      );
+      allow delete: if isAuthenticated() && 
+                   resource != null && 
+                   resource.data.createdBy == request.auth.uid;
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && (
+          resource == null || // Allow reading when creating new messages
+          get(/databases/$(database)/documents/chatRooms/$(roomId)).data.members[request.auth.uid] != null
+        );
+        allow create: if isAuthenticated() && (
+          get(/databases/$(database)/documents/chatRooms/$(roomId)).data.members[request.auth.uid] != null ||
+          !exists(/databases/$(database)/documents/chatRooms/$(roomId)) // Allow creating messages in new rooms
+        );
+        allow update: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+        allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      }
+    }
+
+    // Private chats collection
+    match /privateChats/{chatId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource == null || // Allow initial creation
+        isParticipantInChat(resource.data)
+      );
+      allow delete: if isAuthenticated() && 
+                   resource != null && 
+                   resource.data.participants[request.auth.uid] != null;
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && (
+          resource == null || // Allow reading when creating new messages
+          get(/databases/$(database)/documents/privateChats/$(chatId)).data.participants[request.auth.uid] != null
+        );
+        allow create: if isAuthenticated() && (
+          get(/databases/$(database)/documents/privateChats/$(chatId)).data.participants[request.auth.uid] != null ||
+          !exists(/databases/$(database)/documents/privateChats/$(chatId)) // Allow creating messages in new chats
+        );
+        allow update: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+        allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      }
+    }
+  }
+}
